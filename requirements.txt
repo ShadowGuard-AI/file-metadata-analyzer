@@ -1,0 +1,1 @@
+Since `shlex` is part of the Python standard library, it doesn't typically need to be explicitly listed in requirements or have version constraints applied. It's inherently tied to the Python version being used. Therefore, no output is needed.

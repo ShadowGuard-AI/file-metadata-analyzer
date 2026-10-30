@@ -1,3 +1,5 @@
+![Banner](banner.png)
+
 # file-metadata-analyzer
 Extracts and analyzes file metadata (e.g., creation date, author, software used to create the file) to identify inconsistencies or anomalies that could indicate tampering or malicious origin. Uses libraries like `exiftool` via `pyexiftool`. - Focused on File operations and analysis
 

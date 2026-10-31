@@ -4,7 +4,6 @@ import subprocess
 import json
 import os
 from pathlib import Path
-import shlex
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -49,9 +48,9 @@ def extract_metadata(file_path, exiftool_path="exiftool"):
         dict: A dictionary containing the extracted metadata.  Returns None if an error occurs.
     """
     try:
-        # Construct the ExifTool command.  Use shlex.quote to safely escape the file path
-        # to prevent command injection.
-        command = [exiftool_path, "-j", shlex.quote(str(file_path))]
+        # Pass the plain file path as one list argument. With shell=False the
+        # path is not shell interpreted, so no quoting is needed or wanted.
+        command = [exiftool_path, "-j", str(file_path)]
 
         # Execute the command and capture the output.  Use shell=False for security.
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
@@ -83,6 +82,58 @@ def extract_metadata(file_path, exiftool_path="exiftool"):
         return None
 
 
+EXTENSION_MIME_ALIASES = {
+    "jpg": {"image/jpeg"},
+    "jpeg": {"image/jpeg"},
+    "jpe": {"image/jpeg"},
+    "txt": {"text/plain"},
+    "text": {"text/plain"},
+    "png": {"image/png"},
+    "gif": {"image/gif"},
+    "pdf": {"application/pdf"},
+    "htm": {"text/html"},
+    "html": {"text/html"},
+    "json": {"application/json"},
+    "xml": {"application/xml", "text/xml"},
+    "zip": {"application/zip", "application/x-zip-compressed"},
+    "csv": {"text/csv", "text/plain"},
+    "mp3": {"audio/mpeg"},
+    "mp4": {"video/mp4"},
+    "mov": {"video/quicktime"},
+    "tif": {"image/tiff"},
+    "tiff": {"image/tiff"},
+    "bmp": {"image/bmp", "image/x-ms-bmp"},
+    "svg": {"image/svg+xml"},
+    "doc": {"application/msword"},
+    "docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+    "xls": {"application/vnd.ms-excel"},
+    "xlsx": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    "ppt": {"application/vnd.ms-powerpoint"},
+    "pptx": {"application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+    "odt": {"application/vnd.oasis.opendocument.text"},
+    "rtf": {"application/rtf", "text/rtf"},
+    "gz": {"application/gzip", "application/x-gzip"},
+    "tar": {"application/x-tar"},
+    "wav": {"audio/wav", "audio/x-wav"},
+    "avi": {"video/x-msvideo"},
+    "md": {"text/markdown", "text/plain"},
+}
+
+NO_CHECKABLE_LINE = "No checkable metadata fields were present and no checks could run."
+
+
+def checkable_fields_present(metadata):
+    if not metadata:
+        return False
+    if "CreatorTool" in metadata:
+        return True
+    if "FileModifyDate" in metadata and "FileCreateDate" in metadata:
+        return True
+    if "FileTypeExtension" in metadata and "MIMEType" in metadata:
+        return True
+    return False
+
+
 def analyze_metadata(metadata):
     """
     Analyzes the extracted metadata for inconsistencies or anomalies.
@@ -91,16 +142,33 @@ def analyze_metadata(metadata):
         metadata (dict): A dictionary containing the metadata.
 
     Returns:
-        list: A list of strings describing potential issues.
+        list: A list of strings describing potential issues, preceded by
+        lines naming the checks that ran and the fields that were found.
     """
     issues = []
 
     if not metadata:
-        return ["No metadata found or error extracting metadata."]
+        return [NO_CHECKABLE_LINE]
+
+    fields_found = sorted(metadata.keys())
+    checks_run = []
+    if "CreatorTool" in metadata:
+        checks_run.append("CreatorTool check")
+    if "FileModifyDate" in metadata and "FileCreateDate" in metadata:
+        checks_run.append("date order check")
+    if "FileTypeExtension" in metadata and "MIMEType" in metadata:
+        checks_run.append("file extension and MIME type check")
+
+    header = [
+        f"Checks run: {', '.join(checks_run) if checks_run else 'none'}",
+        f"Metadata fields found: {', '.join(fields_found) if fields_found else 'none'}",
+    ]
+    logging.info(header[0])
+    logging.info(header[1])
 
     # Example analysis: Check for suspicious software
     if "CreatorTool" in metadata:
-        creator_tool = metadata["CreatorTool"].lower()
+        creator_tool = str(metadata["CreatorTool"]).lower()
         if "malware" in creator_tool or "evil" in creator_tool:
             issues.append(f"Suspicious CreatorTool: {creator_tool}")
 
@@ -115,16 +183,23 @@ def analyze_metadata(metadata):
 
     # Example analysis: Detect if file extension mismatches the file type indicated in the metadata
     if "FileTypeExtension" in metadata and "MIMEType" in metadata:
-        file_extension = metadata["FileTypeExtension"].lower()
-        mime_type = metadata["MIMEType"].lower()
+        file_extension = str(metadata["FileTypeExtension"]).lower()
+        mime_type = str(metadata["MIMEType"]).lower()
 
-        if file_extension not in mime_type and mime_type not in file_extension:
-            issues.append(f"File extension '{file_extension}' does not match MIME type '{mime_type}'. Possible file spoofing.")
+        accepted = EXTENSION_MIME_ALIASES.get(file_extension)
+        if accepted is None or mime_type not in accepted:
+            # Keep the original substring behaviour only for extensions
+            # the alias table does not cover at all.
+            if accepted is not None or (file_extension not in mime_type and mime_type not in file_extension):
+                issues.append(f"File extension '{file_extension}' does not match MIME type '{mime_type}'. Possible file spoofing.")
+
+    if not checks_run:
+        return header + [NO_CHECKABLE_LINE]
 
     if not issues:
         issues.append("No anomalies detected.")
 
-    return issues
+    return header + issues
 
 
 def validate_file_path(file_path):
@@ -158,6 +233,17 @@ def main():
     parser = setup_argparse()
     args = parser.parse_args()
 
+    # Refuse an output path that resolves to the input file itself.
+    if args.output:
+        try:
+            if Path(args.output).resolve() == Path(args.file_path).resolve():
+                logging.error("Output path resolves to the input file. Refusing to overwrite the analyzed file.")
+                print("Output path is the input file. Refusing to write the report over the analyzed file.")
+                exit(1)
+        except Exception as e:
+            logging.error(f"Invalid output path: {args.output} - {e}")
+            exit(1)
+
     # Input validation
     if not validate_file_path(args.file_path):
         exit(1) # Exit with error code
@@ -189,6 +275,13 @@ def main():
             exit(1)
     else:
         print(output_str)
+
+    if not args.json and not checkable_fields_present(metadata):
+        exit(1)
+    if args.json and not checkable_fields_present(metadata):
+        logging.error(NO_CHECKABLE_LINE)
+        print(NO_CHECKABLE_LINE)
+        exit(1)
 
 if __name__ == "__main__":
     main()

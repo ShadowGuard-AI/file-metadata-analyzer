@@ -50,6 +50,10 @@ def extract_metadata(file_path, exiftool_path="exiftool"):
     try:
         # Pass the plain file path as one list argument. With shell=False the
         # path is not shell interpreted, so no quoting is needed or wanted.
+        # The command is an argv list with shell=False, and -j asks exiftool for
+        # JSON. For one input file the JSON is a list holding one dict, which is
+        # why extract_metadata returns element zero and treats any other shape
+        # as an error instead of guessing.
         command = [exiftool_path, "-j", str(file_path)]
 
         # Execute the command and capture the output.  Use shell=False for security.
@@ -169,6 +173,10 @@ def analyze_metadata(metadata):
     # Example analysis: Check for suspicious software
     if "CreatorTool" in metadata:
         creator_tool = str(metadata["CreatorTool"]).lower()
+        # A plain substring test on the creating tool's name. It catches a tool
+        # that announces itself and nothing subtler, and it can fire on an
+        # innocent name containing those letters. I keep it because the report
+        # shows the value it fired on.
         if "malware" in creator_tool or "evil" in creator_tool:
             issues.append(f"Suspicious CreatorTool: {creator_tool}")
 
@@ -178,6 +186,10 @@ def analyze_metadata(metadata):
         create_date = metadata["FileCreateDate"]
 
         # Basic date comparison (more sophisticated analysis could be added)
+        # The dates are compared as strings, exactly as exiftool printed them.
+        # Its usual format sorts correctly as text, but two values carrying
+        # different timezone offsets can order wrong, because the offset is
+        # compared as characters too. This is a rough check and reads like one.
         if modify_date < create_date:
             issues.append(f"File modification date ({modify_date}) is earlier than creation date ({create_date}).")
 
@@ -186,6 +198,10 @@ def analyze_metadata(metadata):
         file_extension = str(metadata["FileTypeExtension"]).lower()
         mime_type = str(metadata["MIMEType"]).lower()
 
+        # Extensions in the table get an exact verdict: the MIME type is either
+        # in the accepted set or it is an issue. Extensions the table does not
+        # cover fall back to the older substring test, where either string
+        # containing the other is close enough to pass.
         accepted = EXTENSION_MIME_ALIASES.get(file_extension)
         if accepted is None or mime_type not in accepted:
             # Keep the original substring behaviour only for extensions
@@ -276,6 +292,10 @@ def main():
     else:
         print(output_str)
 
+    # This gate runs after the output has been printed or written. A file
+    # whose metadata holds none of the checkable fields still produces its
+    # report, and only then exits 1, so a caller gets both the evidence and
+    # the failure signal.
     if not args.json and not checkable_fields_present(metadata):
         exit(1)
     if args.json and not checkable_fields_present(metadata):
